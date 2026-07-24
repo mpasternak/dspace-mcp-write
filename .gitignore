@@ -5,3 +5,16 @@ dist/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Secrets / local env — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS / editor turds
+.DS_Store
+Thumbs.db
+._*
+.idea/
