@@ -89,6 +89,12 @@ class WriteClient(DSpaceClient):
         gate on the full origin, not the host.
         """
         if not same_origin(request.url, self._base_origin):
+            # httpx copies the original request's headers onto each redirect hop
+            # and only strips Authorization cross-origin — so X-XSRF-TOKEN (and,
+            # defensively, Authorization) can still ride along to an S3/CDN
+            # target. Strip both so no credential leaves the DSpace origin.
+            request.headers.pop(CSRF_REQUEST_HEADER, None)
+            request.headers.pop("Authorization", None)
             return
         if self._jwt:
             request.headers["Authorization"] = self._jwt
@@ -334,13 +340,33 @@ class WriteClient(DSpaceClient):
 
     # --- write response helpers ---------------------------------------------
 
+    #: Base wording for write failures (spec D9). Kept out of ``_error_for_status``
+    #: so the read path keeps the parent's 422 "unknown search filter" message,
+    #: which is right for a search but wrong for a mutation.
+    _WRITE_STATUS_MESSAGES = {
+        400: "The repository rejected the request for {where} (400).",
+        409: "Conflict for {where} (409): the target is in a conflicting state.",
+        415: "Unsupported or missing Content-Type for {where} (415).",
+        422: (
+            "Validation failed for {where} (422): the repository rejected the "
+            "submitted fields."
+        ),
+    }
+
     def _mutation_error(self, response: httpx.Response, where: str) -> DSpaceError:
-        """Map the status to a message, appending any useful body detail."""
-        error = self._error_for_status(response.status_code, where)
+        """Map a mutation's status to a message, appending body detail (D9)."""
+        status = response.status_code
+        template = self._WRITE_STATUS_MESSAGES.get(status)
+        if template is not None:
+            error = DSpaceError(template.format(where=where))
+            error.status = status
+        else:
+            # 401/403 (and anything else) keep the account-aware wording.
+            error = self._error_for_status(status, where)
         snippet = self._body_snippet(response)
         if snippet:
             detailed = DSpaceError(f"{error.message} Server said: {snippet}")
-            detailed.status = response.status_code
+            detailed.status = status
             return detailed
         return error
 

@@ -25,13 +25,35 @@ MetadataValue = str | dict
 MetadataDict = dict[str, list[MetadataValue]]
 
 
+def _escape_pointer_token(token: str) -> str:
+    """Escape a metadata key for a JSON Pointer path (RFC 6901).
+
+    ``~`` -> ``~0`` and ``/`` -> ``~1`` (in that order), so a key containing
+    those characters cannot inject extra path segments. Real Dublin Core keys
+    never contain them, but the key can come from the model.
+    """
+    return token.replace("~", "~0").replace("/", "~1")
+
+
 def normalize_values(values: list[MetadataValue]) -> list[dict]:
     """Normalise a list of metadata values to a list of DSpace value objects.
 
     A plain string ``s`` becomes ``{"value": s}``. A dict is passed through as a
     shallow copy (so the caller's object is never mutated or aliased into the
     result). Any other type is a programming error and raises ``TypeError``.
+
+    ``values`` itself must be a list. A bare string is iterable, so without this
+    guard ``normalize_values("New")`` would silently explode into one value per
+    character - a real data-corruption trap (the MCP tool schema is
+    ``dict[str, Any]``, so a model can pass a string). The tool layer also
+    validates this and raises a model-facing ``DSpaceError``; this is the
+    defence-in-depth backstop.
     """
+    if not isinstance(values, list):
+        raise TypeError(
+            "Metadata values must be a list, got "
+            f"{type(values).__name__!r} - pass e.g. {{'dc.title': ['A title']}}."
+        )
     normalized: list[dict] = []
     for value in values:
         if isinstance(value, str):
@@ -72,7 +94,7 @@ def submission_patch(
             ops.append(
                 {
                     "op": "add",
-                    "path": f"/sections/{section_id}/{key}",
+                    "path": f"/sections/{section_id}/{_escape_pointer_token(key)}",
                     "value": normalize_values(values),
                 }
             )
@@ -99,9 +121,10 @@ def item_metadata_patch(current: dict, desired: MetadataDict) -> list[dict]:
     """
     ops: list[dict] = []
     for key, values in desired.items():
+        pointer = f"/metadata/{_escape_pointer_token(key)}"
         if key in current:
-            ops.append({"op": "remove", "path": f"/metadata/{key}"})
+            ops.append({"op": "remove", "path": pointer})
         normalized = normalize_values(values)
         if normalized:
-            ops.append({"op": "add", "path": f"/metadata/{key}", "value": normalized})
+            ops.append({"op": "add", "path": pointer, "value": normalized})
     return ops

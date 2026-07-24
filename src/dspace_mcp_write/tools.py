@@ -81,9 +81,13 @@ def read_file_input(
         path = Path(file_path)
         if not path.is_file():
             raise DSpaceError(f"No readable file at {file_path}.")
-        if path.stat().st_size > limit:
-            raise DSpaceError(over)
-        return path.read_bytes(), path.name
+        # stat()/read_bytes() can still fail (permissions, TOCTOU) after is_file().
+        try:
+            if path.stat().st_size > limit:
+                raise DSpaceError(over)
+            return path.read_bytes(), path.name
+        except OSError as exc:
+            raise DSpaceError(f"Could not read {file_path}: {exc}") from exc
 
     # base64 branch: cheap length check before the expensive decode.
     approx = len(content_base64) * 3 // 4
@@ -125,10 +129,40 @@ def _normalize_metadata_map(metadata: dict[str, Any] | None) -> dict[str, list]:
     return result
 
 
+def _validate_metadata_map(metadata: dict[str, Any] | None) -> None:
+    """Raise ``DSpaceError`` unless every value in the map is a list.
+
+    A bare string (``{"dc.title": "x"}``) or dict value would otherwise be
+    exploded one entry per character/key by ``patch.normalize_values`` - a real
+    data-corruption trap, since the MCP tool schema is ``dict[str, Any]``. This
+    runs at the tool boundary, before any HTTP request, so the model gets a
+    clean ``{"error": ...}`` instead of a corrupted item or a raw ``TypeError``.
+    """
+    for key, values in (metadata or {}).items():
+        if not isinstance(values, list):
+            raise DSpaceError(
+                f"Metadata for '{key}' must be a list of values, "
+                f'e.g. {{"{key}": ["..."]}}.'
+            )
+
+
+def _expect_dict(result: Any, where: str) -> dict:
+    """Ensure a mutation returned a JSON object, not a bare ``Response``.
+
+    ``WriteClient.mutate`` yields the raw ``httpx.Response`` for 204/empty/
+    non-JSON bodies; callers that read fields off the result would otherwise hit
+    ``AttributeError`` (which ``_guard`` does not convert). Fail loud and clean.
+    """
+    if not isinstance(result, dict):
+        raise DSpaceError(f"The repository returned a non-JSON response for {where}.")
+    return result
+
+
 def _require_ws_id(value: str) -> str:
     """Validate a workspace-item id (DSpace uses integers here, not UUIDs)."""
     text = str(value).strip()
-    if not text.isdigit():
+    # isascii() guards against non-ASCII digits ("٣", "²") that isdigit() accepts.
+    if not (text.isascii() and text.isdigit()):
         raise DSpaceError(
             f"'{value}' is not a valid workspace item id (expected an integer)."
         )
@@ -254,12 +288,15 @@ def _section_ids_from_definition(definition: dict) -> list[str]:
 
 async def _section_ids_via_throwaway(client: WriteClient, collection: str) -> list[str]:
     """Fallback: create a draft to read its section names, then discard it."""
-    created = await client.mutate(
-        "POST",
-        f"/submission/workspaceitems?owningCollection={collection}",
-        json={},
-        headers=_JSON_CT,
-        where="probe submission form",
+    created = _expect_dict(
+        await client.mutate(
+            "POST",
+            f"/submission/workspaceitems?owningCollection={collection}",
+            json={},
+            headers=_JSON_CT,
+            where="probe submission form",
+        ),
+        "probe submission form",
     )
     ws_id = created.get("id")
     try:
@@ -289,10 +326,12 @@ async def get_submission_form(client: WriteClient, collection: str) -> dict[str,
     """Report a collection's submission fields and which are required.
 
     Read-only when the instance exposes the submission definition; only if that
-    is unavailable does it fall back to a throwaway draft (discarded in a
-    ``finally``).
+    is unavailable does it fall back to a throwaway draft (created and discarded).
+    Because that fallback writes into the collection, the write whitelist is
+    enforced here too.
     """
     uuid = require_uuid(collection, "collection")
+    require_collection_allowed(client.config, uuid)
     section_ids = await _collection_section_ids(client, uuid)
     sections = await detect_form_sections(client, section_ids)
     fields = {
@@ -321,6 +360,7 @@ async def create_workspace_item(
     config: WriteConfig = client.config
     uuid = require_uuid(collection, "collection")
     require_collection_allowed(config, uuid)
+    _validate_metadata_map(metadata)
 
     if not confirm:
         return {
@@ -334,12 +374,15 @@ async def create_workspace_item(
             "confirm_required": True,
         }
 
-    created = await client.mutate(
-        "POST",
-        f"/submission/workspaceitems?owningCollection={uuid}",
-        json={},
-        headers=_JSON_CT,
-        where="create workspace item",
+    created = _expect_dict(
+        await client.mutate(
+            "POST",
+            f"/submission/workspaceitems?owningCollection={uuid}",
+            json={},
+            headers=_JSON_CT,
+            where="create workspace item",
+        ),
+        "create workspace item",
     )
     ws_id = str(created.get("id"))
     self_href = _self_href(created)
@@ -405,6 +448,7 @@ async def update_workspace_item_metadata(
     """Add or fix metadata on an existing draft (repairs a partial create)."""
     config: WriteConfig = client.config
     ws_id = _require_ws_id(workspaceitem_id)
+    _validate_metadata_map(metadata)
     draft = await _workspaceitem(client, ws_id)
     collection = _owning_collection(draft, "collection")
     require_collection_allowed(config, collection)
@@ -513,7 +557,15 @@ async def deposit_workspace_item(
     collection = _owning_collection(draft, "collection")
     require_collection_allowed(config, collection)
 
-    license_section = _find_license_section(draft.get("sections") or {})
+    sections = draft.get("sections") or {}
+    license_section = _find_license_section(sections)
+    # A license already accepted (UI, earlier deposit attempt) must NOT block.
+    license_granted = bool(
+        license_section and (sections.get(license_section) or {}).get("granted")
+    )
+    license_required = (
+        bool(license_section) and not license_granted and not grant_license
+    )
     self_href = _self_href(draft)
 
     if not confirm:
@@ -525,13 +577,14 @@ async def deposit_workspace_item(
                 "workspaceitem_id": ws_id,
                 "collection": collection,
                 "license_section": license_section,
+                "license_already_granted": license_granted,
                 "grant_license": bool(grant_license),
-                "license_required": bool(license_section) and not grant_license,
+                "license_required": license_required,
             },
             "confirm_required": True,
         }
 
-    if license_section and not grant_license:
+    if license_required:
         return {
             "workspaceitem_id": ws_id,
             "status": "license_required",
@@ -543,7 +596,7 @@ async def deposit_workspace_item(
             ),
         }
 
-    if license_section and grant_license:
+    if license_section and not license_granted and grant_license:
         await client.mutate(
             "PATCH",
             f"/submission/workspaceitems/{ws_id}",
@@ -677,12 +730,15 @@ async def add_file_to_item(
     if original is not None:
         bundle_uuid = original.get("uuid") or original.get("id")
     else:
-        created = await client.mutate(
-            "POST",
-            f"/core/items/{uuid}/bundles",
-            json={"name": "ORIGINAL", "metadata": {}},
-            headers=_JSON_CT,
-            where="create ORIGINAL bundle",
+        created = _expect_dict(
+            await client.mutate(
+                "POST",
+                f"/core/items/{uuid}/bundles",
+                json={"name": "ORIGINAL", "metadata": {}},
+                headers=_JSON_CT,
+                where="create ORIGINAL bundle",
+            ),
+            "create ORIGINAL bundle",
         )
         bundle_uuid = created.get("uuid") or created.get("id")
     if not bundle_uuid:
@@ -713,6 +769,7 @@ async def update_item_metadata(
     """Set metadata on an archived item (deterministic remove+add, spec D4)."""
     config: WriteConfig = client.config
     uuid = require_uuid(item, "item")
+    _validate_metadata_map(metadata)
     record = await client.get(f"/core/items/{uuid}", {"embed": "owningCollection"})
     collection = _owning_collection(record, "owningCollection")
     require_collection_allowed(config, collection)
@@ -780,12 +837,15 @@ async def create_collection(
             "confirm_required": True,
         }
 
-    created = await client.mutate(
-        "POST",
-        f"/core/collections?parent={parent}",
-        json=body,
-        headers=_JSON_CT,
-        where="create collection",
+    created = _expect_dict(
+        await client.mutate(
+            "POST",
+            f"/core/collections?parent={parent}",
+            json=body,
+            headers=_JSON_CT,
+            where="create collection",
+        ),
+        "create collection",
     )
     return {
         "collection": created.get("uuid") or created.get("id"),
@@ -823,12 +883,15 @@ async def create_community(
             "confirm_required": True,
         }
 
-    created = await client.mutate(
-        "POST",
-        f"/core/communities{query}",
-        json=body,
-        headers=_JSON_CT,
-        where="create community",
+    created = _expect_dict(
+        await client.mutate(
+            "POST",
+            f"/core/communities{query}",
+            json=body,
+            headers=_JSON_CT,
+            where="create community",
+        ),
+        "create community",
     )
     return {
         "community": created.get("uuid") or created.get("id"),

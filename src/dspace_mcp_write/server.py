@@ -300,6 +300,17 @@ def build_server(config: WriteConfig) -> FastMCP:
         http = WriteClient.build_http(config)
         client = WriteClient(config, http)
         async with http:
+            # Probe first (non-fatal): it corrects a missing "/server" in the
+            # base URL, so the single most common config mistake isn't
+            # misdiagnosed by login() as bad credentials. A blocked /api root
+            # is not fatal — login still works — so we only warn.
+            try:
+                await client.probe()
+            except DSpaceError as exc:
+                print(
+                    f"dspace-mcp-write: startup probe failed: {exc}",
+                    file=sys.stderr,
+                )
             # Fail fast: without a working login the write tools are useless,
             # so we surface the problem at startup instead of on first call.
             try:
