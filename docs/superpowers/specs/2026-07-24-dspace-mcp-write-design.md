@@ -1,8 +1,8 @@
 # dspace-mcp-write — serwer MCP z zapisem dla DSpace 7+
 
 Data: 2026-07-24
-Wersja: 2 (po adwersaryjnym review Fable #1 i **weryfikacji live** na demo.dspace.org, DSpace 10.1-SNAPSHOT)
-Status: do drugiego review Fable, potem plan implementacji
+Wersja: 3 (po adwersaryjnym review Fable #1 **i #2** + **weryfikacja live** na demo.dspace.org, DSpace 10.1-SNAPSHOT)
+Status: gotowy do planu implementacji
 
 ## Cel
 
@@ -121,6 +121,12 @@ udokumentowanym jako **prawnie znaczący** (oznacza akceptację licencji
 repozytorium w imieniu konta). Przy `grant_license=False` deposit nie próbuje
 publikować, tylko zwraca informację, że licencja jest wymagana.
 
+**Sekcję licencji wykrywamy, nie zakładamy** (review #2): identyfikujemy ją
+wśród sekcji szkicu po `sectionType`/obecności slotu `granted`, nie hardkodując
+nazwy `license` (może być przemianowana). Gdy definicja kolekcji **nie ma**
+sekcji licencji, `grant_license` jest bezprzedmiotowy, a deposit idzie dalej —
+bez fałszywej blokady.
+
 `deposit_workspace_item` po `POST` robi **jeden GET** powstałego obiektu, by
 rzetelnie zaraportować stan końcowy: rekord zarchiwizowany od razu
 (`inArchive: true`) czy w kolejce workflow — zależnie od konfiguracji workflow
@@ -146,10 +152,14 @@ zero I/O) tłumaczy słownik na JSON-Patch.
   `/sections/<sekcja>/dc.title`. Nazwy sekcji zależą od kolekcji (D5).
   `Content-Type: application/json`. Operacja `add` ustawia wartość pola.
 - **Archiwum (istniejący item):** JSON-Patch celuje w metadane obiektu:
-  `/metadata/dc.title`. By zbudować poprawny patch (`add` gdy pola brak vs
-  `replace` gdy jest), potrzebny jest **bieżący stan metadanych** — dlatego
-  `update_item_metadata` najpierw GET-uje item. `patch.py` pozostaje czysty:
-  przyjmuje `(bieżące_metadane, żądane)` i zwraca operacje.
+  `/metadata/dc.title`. Enkodowanie jest **deterministyczne i zgodne z
+  kontraktem** (review #2 — `replace` bezindeksowy na tablicy jest niepewny):
+  dla każdego podanego klucza `remove /metadata/<klucz>` (tylko gdy klucz jest
+  obecny — stąd wcześniejszy GET) **+** `add /metadata/<klucz>` z całą tablicą
+  wartości (kolejność tablicy definiuje `place`); pusta lista → samo `remove`.
+  `patch.py` pozostaje czysty: przyjmuje `(bieżące_metadane, żądane)` i zwraca
+  operacje. **Ten ciąg operacji jest na liście „do potwierdzenia live"** — PATCH
+  `/core/items` nie był weryfikowany empirycznie.
 
 ### D5. Formularze submission wykrywamy z konfiguracji (nie z zawartości)
 
@@ -169,12 +179,15 @@ tego:
    w razie potrzeby GET po definicję.)
 2. **Które sekcje są formularzami i jakie pola hostują** — ustalamy pytając
    `GET /api/config/submissionforms/{id-sekcji}` dla każdej sekcji:
-   - **200** → sekcja-formularz; ciało `rows[].fields[].selectableMetadata[0].metadata`
-     daje listę pól DC, a `fields[].mandatory` flagi „wymagane"
-     (zweryfikowane: na demo `publicationStep` → `dc.title` mandatory,
-     `dc.date.issued` mandatory, `dc.type` mandatory, `dc.contributor.author`
-     opcjonalne, itd.);
-   - **400** → sekcja nie-formularzowa (`license`, `upload`, `collection`).
+   - **200** → sekcja-formularz; z każdego pola bierzemy **wszystkie**
+     `rows[].fields[].selectableMetadata[].metadata` (nie samo `[0]` — pola typu
+     qualdrop, np. `dc.identifier.*`, mają wiele wpisów; wzięcie `[0]` gubiłoby
+     `dc.identifier.isbn` itd.), a `fields[].mandatory` daje flagi „wymagane"
+     (zweryfikowane: na demo `publicationStep` → `dc.title`, `dc.date.issued`,
+     `dc.type` mandatory, `dc.contributor.author` opcjonalne);
+   - **400/404** → sekcja nie-formularzowa (`license`, `upload`, `collection`).
+     Traktujemy **oba** kody jako „nie-formularz" — 7.x bywa, że na nieznaną
+     nazwę formularza zwraca 404, nie 400 (na demo 10.1 było 400).
 3. **Routing pól:** każdy klucz z `metadata` kierujemy do **pierwszej**
    sekcji-formularza, która go deklaruje. Domyślne definicje mają **wiele**
    sekcji metadanych (np. `page1`: tytuł/autor/data; `page2`: temat/abstrakt) —
@@ -201,8 +214,14 @@ Trzy warstwy, ale **uczciwie** co do tego, która jest realną granicą:
 
 1. **Poświadczenia wymagane do startu** (D1).
 2. **Biała lista kolekcji** — `DSPACE_WRITE_COLLECTIONS` (CSV UUID). Pusta =
-   wszystkie (domyślnie). Walidacja **po naszej stronie**, przed HTTP:
+   wszystkie (domyślnie). Walidacja **po naszej stronie, przed jakimkolwiek
+   żądaniem mutującym** (sama walidacja bywa poprzedzona GET-em, by ustalić
+   kolekcję celu):
    - `create_workspace_item` — sprawdza `collection`;
+   - `upload_file_to_workspace_item`, `update_workspace_item_metadata` —
+     **GET-ują kolekcję szkicu** i sprawdzają ją (review #2: bez tego bajty
+     pliku i metadane wchodziłyby do szkicu w niedozwolonej kolekcji, mimo że
+     sam deposit jest blokowany — a człowiek mógłby go potem dopchnąć z UI);
    - `deposit_workspace_item` — **GET-uje kolekcję szkicu** i sprawdza ją
      (szkic mógł powstać poza tymi narzędziami; „pośrednie" pokrycie nie
      wystarcza);
@@ -238,7 +257,10 @@ miała tu błędy:
   **`X-XSRF-TOKEN`**. Źródłem prawdy jest **nagłówek odpowiedzi** (nie cookie —
   poleganie na jarze jest kruche wobec zmian w DSpace/Spring): *response hook*
   zapisuje świeży `DSPACE-XSRF-TOKEN` do stanu klienta, *request hook* wysyła go
-  jako `X-XSRF-TOKEN`. Token **rotuje po każdej odpowiedzi** (zweryfikowane).
+  jako `X-XSRF-TOKEN`. Token **może rotować na dowolnej odpowiedzi** —
+  zapisujemy go, ilekroć nagłówek się pojawi (na demo 10.1 rotował często, ale
+  DSpace ≥7.4 rotuje „gdy trzeba", więc nie zakładamy stałej rotacji
+  per-odpowiedź; projekt „zapisz, gdy jest" jest odporny na oba warianty).
 - **Pozyskanie tokenu:** `GET /api/security/csrf` (istnieje **od 7.5**). Na 404
   (7.0–7.4) fallback na tani GET, np. `GET /api/authn/status`, który też zwraca
   nagłówek z tokenem. Kompatybilność deklarujemy jako **7.5+ pewna, 7.0–7.4
@@ -253,18 +275,30 @@ miała tu błędy:
   przychodzi tylko z login/refresh; w normalnym ruchu token po prostu **wygasa**
   (domyślnie ~30 min). Dlatego samo „podmienianie JWT z odpowiedzi" nie
   wystarcza — potrzebny jest re-login (niżej).
-- **Doklejanie nagłówków tylko do hosta DSpace (KRYTYCZNE):** *request hook*
-  dokleja `Authorization` i `X-XSRF-TOKEN` **wyłącznie**, gdy host żądania ==
-  host `base_url`. Powód (zweryfikowany w źródłach httpx 0.28): przy
-  `follow_redirects=True` request-hooki odpalają się na **każdym hopie**
+- **Doklejanie nagłówków tylko do origin DSpace (KRYTYCZNE):** *request hook*
+  dokleja `Authorization` i `X-XSRF-TOKEN` **wyłącznie**, gdy **pełny origin**
+  żądania (schemat + host + port) zgadza się z originem `base_url`. Porównanie
+  po samym hoście było błędem (review #2): przepuściłoby JWT na tym samym
+  hoście po downgrade https→http (plaintext!) albo na inny port (sidecar).
+  Dozwolony wyjątek jak w httpx: upgrade http→https na tym samym hoście/portach
+  domyślnych. Powód całego mechanizmu (zweryfikowany w źródłach httpx 0.28):
+  przy `follow_redirects=True` hooki odpalają się na **każdym hopie**
   przekierowania, już po tym, jak httpx zdejmuje `Authorization` dla hopów
   cross-origin. Bitstreamy (`/content`) i `pid/find` przekierowują 302 często do
   S3/CDN — bez tego warunku doklejalibyśmy **uprzywilejowany JWT do obcego
   hosta** (wyciek do logów S3/CDN) i **psuli pobieranie** (presigned URL odrzuca
-  drugi mechanizm auth). To także chroni reużyte `get_bitstream_text`/`stream_bytes`.
-- **Rejestracja hooków:** `WriteClient.build_http()` → `super().build_http()`,
-  potem `http.event_hooks = {"request":[_inject], "response":[_capture_csrf]}` i
-  własny `User-Agent` (`dspace-mcp-write/<wersja>`).
+  drugi mechanizm auth). Chroni to też reużyte `get_bitstream_text`/`stream_bytes`.
+- **Response (capture) hook też origin-scoped:** capture świeżego
+  `DSPACE-XSRF-TOKEN` do stanu klienta następuje **tylko** dla odpowiedzi z
+  originu DSpace (sprawdzamy `response.request.url`), żeby odpowiedź z S3/CDN
+  nie zatruła zapisanego tokenu CSRF.
+- **Rejestracja hooków — w `__init__`, nie w `build_http` (review #2):**
+  `DSpaceClient.build_http()` jest **`@classmethod`** wołaną, zanim instancja
+  istnieje, a hooki potrzebują stanu instancji (JWT, bieżący token CSRF).
+  Dlatego: `WriteClient.build_http()` (classmethod) ustawia tylko statyczny
+  `User-Agent` (`dspace-mcp-write/<wersja>`), a `WriteClient.__init__` — mając
+  już `self.http` i `self` ze stanem — ustawia
+  `self.http.event_hooks = {"request":[self._inject], "response":[self._capture]}`.
 
 `login()` woła się w lifespanie serwera przy starcie (fail-fast).
 
@@ -275,13 +309,28 @@ wpisuje tam bezużyteczne „An exception has occurred"). Przy **zapisie** DSpac
 zwraca konkretne błędy pól — więc warstwa zapisu ma własne mapowanie.
 
 - **401 w trakcie sesji (wygasły JWT):** re-login **raz** i powtórzenie żądania;
-  drugi 401 → „authentication failed". Ta logika musi objąć **także ścieżkę
-  odczytu** — reużyte narzędzia idą przez `DSpaceClient.get()` → `_request_json()`,
-  które nie ma retry; bez tego po ~30 min każdy odczyt cicho degraduje i zwraca
-  **odziedziczony** komunikat „this server queries DSpace anonymously" (nieprawdę
-  w serwerze uwierzytelnionym). Dlatego `WriteClient` **nadpisuje
-  `_request_json()`** (dokłada 401→relogin→retry) **oraz `_error_for_status()`**
-  (komunikaty 401/403 właściwe dla serwera z kontem).
+  drugi 401 → „authentication failed". Ta logika musi objąć **całą ścieżkę
+  odczytu**:
+  - reużyte narzędzia idą przez `DSpaceClient.get()` → `_request_json()` —
+    `WriteClient` **nadpisuje `_request_json()`** (401→relogin→retry);
+  - ale `get_bitstream_text` pobiera treść przez `stream_bytes()`, który woła
+    `self.http.stream(...)` **z pominięciem `_request_json`** (review #2) —
+    dlatego `WriteClient` **nadpisuje też `stream_bytes()`** (401 na `/content`
+    → relogin → retry). „Jeden chokepoint" nie jest prawdą dla tego klienta.
+  - `WriteClient` nadpisuje `_error_for_status()` — komunikaty 401/403 właściwe
+    dla serwera z kontem (np. „the configured account does not have access to
+    that object", nie read-owe „…anonymously").
+- **Współbieżność re-loginu (review #2):** FastMCP obsługuje wywołania
+  równolegle; po wygaśnięciu JWT N żądań dostaje 401 naraz. Re-login owijamy
+  **`asyncio.Lock`** z **re-checkiem** („czy inne zadanie już odświeżyło token?"
+  — porównanie zapisanego JWT sprzed i po zajęciu locka), więc N równoległych
+  401 daje **dokładnie jeden** login. `login()` **czyści zapisany JWT przed**
+  `POST /authn/login` (albo request hook pomija `Authorization` dla
+  `/authn/login`), bo wysłanie wygasłego JWT do loginu bywa odrzucane przez
+  filtr auth zanim dojdzie do sprawdzenia poświadczeń. Żądania **ścieżki
+  logowania** (`security/csrf`, `authn/status`, `authn/login`) **omijają**
+  override 401-retry (surowe `self.http` albo flaga re-entrancy), by nie wpaść
+  w pętlę relogin→401→relogin.
 - **403 na żądaniu mutującym:** może oznaczać **nieświeży token CSRF** (DSpace
   zwraca wtedy 403 z nowym tokenem w nagłówku), a nie brak uprawnień. `mutate()`/
   `upload()` na 403: odświeżają token z odpowiedzi i **powtarzają raz**; dopiero
@@ -316,7 +365,7 @@ dspace-mcp-write/
 ├── src/dspace_mcp_write/
 │   ├── __init__.py          # __version__
 │   ├── config.py            # WriteConfig(Config) frozen: + write_collections, upload_max_mb
-│   ├── auth.py              # handshake CSRF+JWT, hooki (origin-scoped inject, capture CSRF)
+│   ├── auth.py              # handshake CSRF+JWT, origin-scoped hooki (inject + capture)
 │   ├── client.py            # WriteClient(DSpaceClient): login(), mutate(), upload(),
 │   │                        #   nadpisane _request_json()/_error_for_status(), build_http()
 │   ├── patch.py             # (bieżące, żądane) → JSON-Patch (czyste funkcje)
@@ -363,16 +412,21 @@ reimplementujemy (reużywając `normalize_base_url`); brak `USERNAME`/`PASSWORD`
 
 `WriteClient(DSpaceClient)`:
 
-- `login()` — handshake z D8; zapisuje JWT w instancji, token CSRF w stanie.
+- `login()` — handshake z D8; zapisuje JWT w instancji, token CSRF w stanie;
+  chroniony `asyncio.Lock` z re-checkiem (D9); ścieżka logowania omija override
+  401-retry.
 - `mutate(method, path, *, json=None, data=None, headers=None, where)` — żądanie
   mutujące pod ścieżkę względną wobec `/api`; 401→relogin→retry, 403→odśwież
   CSRF→retry (D9); mapowanie błędów zapisu z ciałem.
 - `upload(path, *, file_bytes, filename, fields=None, where, timeout=…)` — `POST`
   multipart (część `file` + opcjonalnie `properties` typu `application/json`),
   własny dłuższy timeout.
-- nadpisane `_request_json()` (401→relogin dla ścieżki odczytu) i
-  `_error_for_status()` (401/403 dla serwera z kontem).
-- nadpisane `build_http()` (event_hooks + własny User-Agent).
+- nadpisane `_request_json()` **i `stream_bytes()`** (401→relogin dla całej
+  ścieżki odczytu — D9) oraz `_error_for_status()` (401/403 dla serwera z kontem).
+- nadpisane `build_http()` (classmethod) tylko dla `User-Agent`; **hooki
+  rejestrowane w `__init__`** (stan instancji — D8).
+- `__init__` przechowuje stan auth: `_jwt`, `_csrf`, `_login_lock`; rejestruje
+  origin-scoped hooki na `self.http`.
 
 ## Narzędzia
 
@@ -404,7 +458,11 @@ Przy `confirm=False` — sam podgląd.
 
 **`update_workspace_item_metadata`.** Naprawa/uzupełnienie metadanych istniejącego
 szkicu (ta sama maszyneria detekcji sekcji i patcha co create). Pozwala wyjść z
-sytuacji „draft istnieje, ale walidacja pól przeszła tylko częściowo".
+sytuacji „draft istnieje, ale walidacja pól przeszła tylko częściowo". Sekcje
+bierze z **`GET /submission/workspaceitems/{id}`** (nie ma tu odpowiedzi POST).
+Uwaga do potwierdzenia live: semantyka `add` na **już wypełnionym** polu
+submission (dokładnie ten scenariusz) — jeśli `add` dopisuje zamiast nadpisywać,
+używamy `remove`+`add` per klucz, by nie duplikować wartości.
 
 **`deposit_workspace_item`.** Jedyne publikujące (D2). GET-uje kolekcję szkicu
 (biała lista). Gdy `grant_license=True` — najpierw `PATCH /sections/license/granted`.
@@ -412,11 +470,12 @@ Potem `POST /workflow/workflowitems` (`text/uri-list` = self-href). Na końcu GE
 powstałego obiektu → raport, czy zarchiwizowany, czy w workflow. Gdy
 `grant_license=False` — nie publikuje; zwraca, że licencja jest wymagana.
 
-**`update_item_metadata`.** GET-uje bieżące metadane, buduje patch (`add` gdy
-pola brak, `replace` gdy jest). Semantyka: **dla każdego podanego klucza ustawia
-całą listę wartości tego klucza** (dodaje, gdy brak); klucze niepodane bez zmian;
-pusta lista dla klucza = usunięcie pola. Brak osobnego `mode` (jedna, jasna
-semantyka). `patch.py` czysty: `(bieżące, żądane) → operacje`.
+**`update_item_metadata`.** GET-uje bieżące metadane, buduje patch
+deterministycznie (D4): per klucz `remove /metadata/<klucz>` (gdy obecny) +
+`add /metadata/<klucz>` z całą tablicą. Semantyka: **dla każdego podanego klucza
+ustawia całą listę wartości tego klucza**; klucze niepodane bez zmian; pusta
+lista = usunięcie pola. Brak osobnego `mode` (jedna, jasna semantyka).
+`patch.py` czysty: `(bieżące, żądane) → operacje`.
 
 **`add_file_to_item`.** GET owningCollection (biała lista) → znajduje/tworzy
 bundle `ORIGINAL` → `POST /core/bundles/{uuid}/bitstreams` (multipart `file` +
@@ -441,18 +500,24 @@ przy zapisie (D9).
 - `test_auth.py`: handshake CSRF→login→JWT (JWT z nagłówka odpowiedzi; nazwy
   `DSPACE-XSRF-TOKEN`/`DSPACE-XSRF-COOKIE`/`X-XSRF-TOKEN`); rotacja CSRF z
   nagłówka; **origin-scoping** — żądanie przekierowane na inny host **nie** niesie
-  `Authorization` (regresja z review #1); fallback `security/csrf` 404 → status.
+  `Authorization`, oraz **ten sam host, inny schemat/port** też nie niesie
+  (dziura z review #2); capture hook nie zapisuje CSRF z odpowiedzi cross-origin;
+  fallback `security/csrf` 404 → status; **N równoległych 401 → dokładnie jeden
+  login** (asyncio.Lock + re-check).
 - `test_patch.py`: `(bieżące, żądane)` → JSON-Patch dla submission i archiwum;
   `add` vs `replace`; usuwanie pustą listą; stringi vs obiekty. Najgęstsze.
 - `test_forms.py`: detekcja sekcji (200/400 z `submissionforms/{id}`), routing
   pól do właściwej sekcji, wiele sekcji metadanych, klucz bez sekcji → błąd.
 - `test_client.py`: `mutate()`/`upload()` — metoda, nagłówki, multipart;
-  **401→relogin→retry na ścieżce read** (przez `_request_json`) i write; **403→
-  odśwież CSRF→retry**; drugi 401/403 propaguje; mapowanie błędów z ciałem;
-  nadpisane `_error_for_status` daje komunikaty uwierzytelnione.
+  **401→relogin→retry na ścieżce read** (przez `_request_json`), **na ścieżce
+  `/content`** (przez `stream_bytes`) i na write; **403→odśwież CSRF→retry**;
+  drugi 401/403 propaguje; mapowanie błędów z ciałem; nadpisane
+  `_error_for_status` daje komunikaty uwierzytelnione.
 - `test_tools.py`: każde narzędzie — sukces, `confirm=False` podgląd bez HTTP,
-  odrzucenie spoza białej listy, 422 z ciałem, limit pliku, licencja przy
-  deposicie, porażka cząstkowa create (id+błędy, szkic zostaje).
+  odrzucenie spoza białej listy (w tym `upload_file_to_workspace_item` i
+  `update_workspace_item_metadata` — przez GET kolekcji szkicu), 422 z ciałem,
+  limit pliku, licencja przy deposicie (w tym kolekcja bez sekcji licencji →
+  deposit idzie dalej), porażka cząstkowa create (id+błędy, szkic zostaje).
 - `test_config.py`: brak `USERNAME`/`PASSWORD` → `ValueError`; parsowanie białej
   listy/limitu; `WriteConfig` frozen; `enable_write` ignorowane.
 - `test_server.py`: rejestrują się read+write; **test importu** API `dspace-mcp`
