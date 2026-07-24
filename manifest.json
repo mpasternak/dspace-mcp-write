@@ -1,0 +1,86 @@
+{
+  "manifest_version": "0.4",
+  "name": "dspace-mcp-write",
+  "display_name": "DSpace Repository (deposit & edit)",
+  "version": "0.1.0",
+  "description": "Authenticated write MCP server for DSpace 7+ repositories (deposit, upload, edit)",
+  "long_description": "Deposits items into a DSpace 7+ repository, uploads bitstreams, and edits metadata over the authenticated REST API — a superset of dspace-mcp, so the read tools are included too.\n\nThis server can CHANGE your repository. It signs in as the technical account you configure below and acts with that account's rights. Restrict it with the collection allow-list unless you intend it to write anywhere.",
+  "author": {
+    "name": "Michał Pasternak",
+    "email": "michal.dtz@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mpasternak/dspace-mcp-write"
+  },
+  "homepage": "https://github.com/mpasternak/dspace-mcp-write#readme",
+  "documentation": "https://github.com/mpasternak/dspace-mcp-write#readme",
+  "support": "https://github.com/mpasternak/dspace-mcp-write/issues",
+  "license": "MIT",
+  "keywords": [
+    "dspace",
+    "mcp",
+    "repository",
+    "deposit",
+    "submission",
+    "llm",
+    "open-access"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "mcpb/launch.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "mcpb/launch.py"],
+      "env": {
+        "DSPACE_BASE_URL": "${user_config.base_url}",
+        "DSPACE_USERNAME": "${user_config.username}",
+        "DSPACE_PASSWORD": "${user_config.password}",
+        "DSPACE_WRITE_COLLECTIONS": "${user_config.write_collections}",
+        "DSPACE_UPLOAD_MAX_MB": "${user_config.upload_max_mb}"
+      }
+    }
+  },
+  "user_config": {
+    "base_url": {
+      "type": "string",
+      "title": "DSpace base URL",
+      "description": "REST API root of your repository, e.g. https://demo.dspace.org/server — the /server endpoint, not the public web UI.",
+      "required": true
+    },
+    "username": {
+      "type": "string",
+      "title": "EPerson e-mail",
+      "description": "E-mail of the technical account used to authenticate. Use a dedicated account, not your personal administrator login.",
+      "required": true
+    },
+    "password": {
+      "type": "string",
+      "title": "Password",
+      "description": "Password for that account.",
+      "required": true,
+      "sensitive": true
+    },
+    "write_collections": {
+      "type": "string",
+      "title": "Writable collections (UUIDs)",
+      "description": "Comma-separated collection UUIDs that writes are restricted to. Leave empty to allow writing to every collection the account can reach — set it unless you really mean that.",
+      "required": false,
+      "default": ""
+    },
+    "upload_max_mb": {
+      "type": "number",
+      "title": "Upload size limit (MB)",
+      "description": "Reject bitstream uploads larger than this.",
+      "required": false,
+      "default": 100,
+      "min": 1
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

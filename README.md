@@ -5,6 +5,17 @@
 [![Python](https://img.shields.io/pypi/pyversions/dspace-mcp-write.svg)](https://pypi.org/project/dspace-mcp-write/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/mpasternak/dspace-mcp-write/releases/latest/download/dspace-mcp-write.mcpb)
+[![Install in Cursor](https://img.shields.io/badge/Install_in-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white)](https://cursor.com/en/install-mcp?name=dspace-mcp-write&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJkc3BhY2UtbWNwLXdyaXRlIl0sImVudiI6eyJEU1BBQ0VfQkFTRV9VUkwiOiIiLCJEU1BBQ0VfVVNFUk5BTUUiOiIiLCJEU1BBQ0VfUEFTU1dPUkQiOiIifX0=)
+[![Install in VS Code](https://img.shields.io/badge/Install_in-VS_Code-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22dspace-mcp-write%22%2C%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22dspace-mcp-write%22%5D%2C%22env%22%3A%7B%22DSPACE_BASE_URL%22%3A%22%22%2C%22DSPACE_USERNAME%22%3A%22%22%2C%22DSPACE_PASSWORD%22%3A%22%22%7D%7D)
+
+> **This server changes your repository.** One click installs it, but it acts
+> with the rights of the technical account you give it. The installer asks for
+> the base URL, an EPerson e-mail and a password; the Cursor and VS Code links
+> carry those keys empty, to be filled in locally rather than pasted into a URL.
+> Set `DSPACE_WRITE_COLLECTIONS` to an allow-list of collection UUIDs unless you
+> really mean "may write anywhere this account can reach".
+
 An authenticated, **write-capable** [MCP](https://modelcontextprotocol.io/)
 server for [DSpace](https://dspace.org/) 7+ repositories. It lets an AI
 assistant **deposit new items, upload files, edit metadata, and create
