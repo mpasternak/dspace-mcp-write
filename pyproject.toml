@@ -1,0 +1,74 @@
+[project]
+name = "dspace-mcp-write"
+version = "0.1.0"
+description = "Authenticated write MCP server for DSpace 7+ repositories (deposit, upload, edit)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Michał Pasternak", email = "michal.dtz@gmail.com" },
+]
+keywords = ["dspace", "mcp", "repository", "deposit", "submission", "llm", "open-access"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = [
+    # Nadzbiór dspace-mcp: reużywamy DSpaceClient, READ_TOOLS, shaping,
+    # normalize_base_url. Pin <0.2, bo stoimy na jego wewnętrznym API.
+    "dspace-mcp>=0.1.1,<0.2",
+    "mcp[cli]>=1.28.0",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/mpasternak/dspace-mcp-write"
+Repository = "https://github.com/mpasternak/dspace-mcp-write"
+Issues = "https://github.com/mpasternak/dspace-mcp-write/issues"
+
+[project.scripts]
+dspace-mcp-write = "dspace_mcp_write.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dspace_mcp_write"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/dspace_mcp_write", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live: contract tests against a live DSpace instance (deselected by default)",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dspace_mcp_write", "conftest"]
