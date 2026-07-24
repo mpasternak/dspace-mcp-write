@@ -1,8 +1,8 @@
 # dspace-mcp-write
 
-[![CI](https://github.com/mpasternak/dspace-mcp-write/actions/workflows/ci.yml/badge.svg)](https://github.com/mpasternak/dspace-mcp-write/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/dspace-mcp-write)](https://pypi.org/project/dspace-mcp-write/)
-[![Python](https://img.shields.io/pypi/pyversions/dspace-mcp-write)](https://pypi.org/project/dspace-mcp-write/)
+[![CI](https://github.com/mpasternak/dspace-mcp-write/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mpasternak/dspace-mcp-write/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/dspace-mcp-write.svg)](https://pypi.org/project/dspace-mcp-write/)
+[![Python](https://img.shields.io/pypi/pyversions/dspace-mcp-write.svg)](https://pypi.org/project/dspace-mcp-write/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 An authenticated, **write-capable** [MCP](https://modelcontextprotocol.io/)
